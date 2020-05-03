@@ -1,0 +1,2 @@
+# CreateAsmdef
+asmdefファイルを作成するUnityのEditor拡張

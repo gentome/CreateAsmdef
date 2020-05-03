@@ -1,2 +1,4 @@
 # CreateAsmdef
 asmdefファイルを作成するUnityのEditor拡張
+Windowからメニューを開きます。
+選択したフォルダ以下にasmdefファイルを作成します。

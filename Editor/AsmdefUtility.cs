@@ -3,15 +3,21 @@ using System.Collections;
 using UnityEditor;
 using UnityEngine;
 using System.Collections.Generic;
+using UnityEditor.Compilation;
+using System.Runtime.CompilerServices;
+using System.Threading;
 /// <summary>
 /// Editorフォルダ以下においてください
 /// </summary>
 public class AsmdefUtility : EditorWindow
 {
-    int count;
-    string[] asmdefGuidArray;
-    string rootAsmdefGuid;
-    DirectoryInfo rootInfo;
+    readonly string desc = $@"
+選択したフォルダ直下にasmdefファイルを作ります。
+Editorフォルダ以下にも作ります
+Editorフォルダ以下の場合、アセットのルートフォルダに作成したasmdefファイルへの参照を追加します
+Assets直下のフォルダを指定しないとおかしくなるかも
+参照が足りないときもあるので、その場合は自分で追加する必要があります";
+  
     [MenuItem("Window/CreateAsmdef")]
     static void Open()
     {
@@ -19,29 +25,19 @@ public class AsmdefUtility : EditorWindow
     }
     private void OnGUI()
     {
-        count = 0;
-        GUILayout.Label($@"
-選択したフォルダ直下にasmdefファイルを作ります。
-Editorフォルダ以下にも作ります
-Editorフォルダ以下の場合、アセットのルートフォルダに作成したasmdefファイルへの参照を追加します
-Assets直下のフォルダを指定しないとおかしくなるかも
-参照が足りないときもあるので、その場合は自分で追加する必要があります");
+        GUILayout.Label(desc);
         if (GUILayout.Button("create"))
         {
             string filepath = EditorUtility.OpenFolderPanel("title", "Assets", "_Project");
-            rootAsmdefGuid = "";
+            
             if (string.IsNullOrEmpty(filepath))//何も選択されていなければ
             {
                 return;
             }
-            rootInfo = new DirectoryInfo(filepath);
-            //最初に選択したフォルダ直下にasmdefファイルを作成する
-            MakeAsmdef(rootInfo.FullName, $"{rootInfo.Name}.asmdef", AsmType.root);
-            //再帰的にフォルダの階層を降りて行ってEditorフォルダがあればasmdefファイルを作成
-            CreateAsmdef(rootInfo);
+            DirectoryInfo rootInfo = new DirectoryInfo(filepath);
+            AsmdefCreator.CreateAll(rootInfo);
 
             AssetDatabase.Refresh();
-            Debug.Log(count + "個処理した");
         }
 
         GUILayout.Label("選択したフォルダ以下のasmdefファイルを全部消します。");
@@ -53,126 +49,172 @@ Assets直下のフォルダを指定しないとおかしくなるかも
                 return;
             }
             DirectoryInfo info = new DirectoryInfo(filepath);
-            AllDelete(info);
+            DeleteAsmdef.Delete(info);
             AssetDatabase.Refresh();
-
-            Debug.Log(count + "個処理した");
+            Debug.Log($"{DeleteAsmdef.count}個のファイルを消去しました");
         }
     }
-    /// <summary>
-    /// 再帰で下の階層のフォルダを検索していく
-    /// Editorフォルダだったらasmdefファイルを作成する
-    /// Editorフォルダで、スクリプトファイルが無くて、
-    /// dllファイルがあればasmdefファイルを作成しない
-    /// </summary>
-    /// <param name="info"></param>
-    void CreateAsmdef(DirectoryInfo info)
+}
+   
+
+internal class AsmdefCreator
+{
+    static int count;
+    public static void CreateAll(DirectoryInfo rootInfo)
     {
-        if (info.Name == "Editor")//エディタフォルダの場合
+        count = 0;
+
+        //最初に選択フォルダ直下のasmdefファイルを作る
+        var fileInfo = MakeFile(rootInfo);
+        WriteAsmdefStr( new StreamWriter(fileInfo.fs),fileInfo.asmName );
+
+        //Editorフォルダからルートフォルダ直下のasmdefファイルを参照するためにGUIDを取得
+        string rootAsmdefGuid = 
+            AssetDatabase.AssetPathToGUID(
+                fileInfo.fs.Name.Substring(fileInfo.fs.Name.IndexOf("Assets")) 
+                );
+        
+        if (string.IsNullOrEmpty(rootAsmdefGuid))
         {
-            //スクリプトファイルが無くてもDllファイルが無ければ作成する
-            if(info.GetFiles("*.cs").Length <= 0)//スクリプトファイルがない
+            Debug.LogError("asmdefguidを取得できていない");
+        }
+        
+        foreach (DirectoryInfo info in rootInfo.GetDirectories())
+        {
+            Create(info, rootAsmdefGuid);
+        }
+        Debug.Log($"{count}個 asmdefファイルを作成しました");
+    }
+    /// <summary>
+    /// 再帰的にEditorフォルダが無いか調べていく
+    /// </summary>
+    /// <param name="dirInfo">調査ちゅうのフォルダ</param>
+    /// <param name="rootAsmdefGuid">ルートフォルダのGUID</param>
+    static void Create(DirectoryInfo dirInfo,string rootAsmdefGuid)
+    {
+        if (dirInfo.Name == "Editor")//エディタフォルダの場合
+        {
+            //スクリプトファイルが無くてDllファイルのみであれば作成しない
+            //どちらもない時は作成する
+            if (dirInfo.GetFiles("*.cs").Length <= 0)//スクリプトファイルがない
             {
-                if(info.GetFiles("*.dll").Length > 0)//スクリプトファイルが無くてdllファイルがあれば作成しない
+                if (dirInfo.GetFiles("*.dll").Length > 0)//スクリプトファイルが無くてdllファイルがあれば作成しない
                 {
-                    Debug.Log("csファイルが無くDLLファイルがあったので作成しない-" + info.FullName);
+                    //Debug.Log("csファイルが無くDLLファイルがあったので作成しない-" + dirInfo.FullName);
                     return;
                 }
             }
-            int random = UnityEngine.Random.Range(0, 10000);
-            string asmName = $"{info.Parent.Name}{info.Name}{random}.asmdef";//asmdefのファイル名は被らないように乱数を適当にいれてる
-            string directoryPath = info.FullName;
-            MakeAsmdef(directoryPath, asmName,AsmType.editor);
+            var fileInfo = MakeFile(dirInfo, rootAsmdefGuid);
+            WriteAsmdefStr( new StreamWriter(fileInfo.fs), fileInfo.asmName, rootAsmdefGuid);
             return;//Editorフォルダに当たったら下の階層のフォルダは処理しない
         }
 
-        foreach(DirectoryInfo inforow in info.GetDirectories())
+        foreach (DirectoryInfo inforow in dirInfo.GetDirectories())
         {
-            CreateAsmdef(inforow);
+            Create(inforow,rootAsmdefGuid);
         }
     }
-    
-    void MakeAsmdef(string directoryPath,string asmName,AsmType asmtype)
+    static (FileStream fs,string asmName) MakeFile(DirectoryInfo info)
     {
-        if (!File.Exists(directoryPath+"\\"+asmName))
-        {
-            //Closeで閉じないと何かエラーが出ると思う
-            File.Create(directoryPath + "\\" + asmName).Close();
-        }
-        string contents = "";
-        switch (asmtype)
-        {
-            case AsmType.editor:
-                contents =
-$@" 
-{{
-    ""name"":""{asmName}"",
-    ""optionalUnityReferences"": [],
-    ""references"":[
-        ""GUID:{rootAsmdefGuid}""
-    ],
-    ""includePlatforms"": [
-        ""Editor""
-    ],
-    ""excludePlatforms"": [],
-    ""allowUnsafeCode"": false,
-    ""overrideReferences"": false,
-    ""precompiledReferences"": [],
-    ""autoReferenced"": true,
-    ""defineConstraints"": [],
-    ""versionDefines"": []
-}}
-";
+        string asmName = AsmdefName(info);
+        //macとwindowsで区切り文字が違うのでIO.Path.DirectorySeparatorCharを使う
+        string fullName = info.FullName + Path.DirectorySeparatorChar + asmName;
 
-                break;
-            case AsmType.root:
-                //ルートフォルダの時だけこの分岐に入る
-                contents =
-$@" 
-{{
-    ""name"":""{asmName}"",
-    ""references"": [],
-    ""optionalUnityReferences"": [],
-    ""includePlatforms"": [],
-    ""excludePlatforms"": [],
-    ""allowUnsafeCode"": false,
-    ""overrideReferences"": false,
-    ""precompiledReferences"": [],
-    ""autoReferenced"": true,
-    ""defineConstraints"": [],
-    ""versionDefines"": []
-}}
-";
-                AssetDatabase.Refresh();//ガイドが取得できないかも？
-                rootAsmdefGuid = AssetDatabase.AssetPathToGUID(rootInfo.FullName.Substring(rootInfo.FullName.IndexOf("Assets"))+"\\"+asmName);
-                break;
-        }
-
-        File.WriteAllText(directoryPath+"\\"+asmName, contents);
-       
-        //Debug.Log(directoryPath + "\\" + asmName + "に作成した");
-        count++;//ただ処理したasmdefファイルの数を数えてるだけ
+        return (File.Create(fullName),asmName);
+    }
+    static (FileStream fs, string asmName) MakeFile(DirectoryInfo info,string rootGuid)
+    {
+        string asmName = AsmdefName(info, rootGuid);
+        //macとwindowsで区切り文字が違うのでIO.Path.DirectorySeparatorCharを使う
+        string fullName = info.FullName + Path.DirectorySeparatorChar + asmName;
+        return (File.Create(fullName), asmName);
+    }
+    /// <summary>
+    /// asmdefファイルにJson文字列を書き込む
+    /// </summary>
+    /// <param name="asmName"></param>
+    /// <returns></returns>
+    static void WriteAsmdefStr(StreamWriter sw,string asmName )
+    {
+        var str = new AsmdefJson();
+        str.name = asmName;
+        sw.Write(str.ToString());
+        sw.Flush();
+        sw.Close();
+        count++;
     }
 
     /// <summary>
-    /// フォルダ以下のasmdefファイルを全部消す
+    /// asmdefファイルにJson文字列を書き込む
+    /// </summary>
+    /// <param name="asmName"></param>
+    /// <param name="rootAsmdefGuid"></param>
+    /// <returns></returns>
+    static void WriteAsmdefStr( StreamWriter sw ,string asmName, string rootAsmdefGuid)
+    {
+        var json = new AsmdefJson();
+        json.name = asmName;
+        json.references.Add($"GUID:{rootAsmdefGuid}");
+        json.includePlatforms.Add("Editor");
+        sw.Write(json.ToString());
+        sw.Flush();
+        sw.Close();
+        count++;
+    }
+    /// <summary>
+    /// asmdefファイルの名前が被らないように乱数入れたりしてみてる
     /// </summary>
     /// <param name="info"></param>
-    void AllDelete(DirectoryInfo info)
+    /// <returns></returns>
+    static string AsmdefName(DirectoryInfo info)
     {
-        foreach(FileInfo fileinfo in info.GetFiles("*.asmdef"))
+        return  info.Name  + ".asmdef";
+    }
+    static string AsmdefName(DirectoryInfo info,string rootGuid)
+    {
+        int rand = Random.Range(0, 10000);
+        return info.Parent.Name + info.Name + rand + ".asmdef";
+    }
+}
+/// <summary>
+/// 選択したフォルダ以下のasmdefファイルを全て消去する
+/// </summary>
+internal  class DeleteAsmdef 
+{
+    public static int count = 0;
+    public static void Delete(DirectoryInfo dirInfo)
+    {
+        foreach (FileInfo fileinfo in dirInfo.GetFiles("*.asmdef"))
         {
             int index = fileinfo.FullName.IndexOf("Assets");
             string path = fileinfo.FullName.Substring(index);
-            Debug.Log("ファイル消去する:"+path);
             AssetDatabase.DeleteAsset(path);
             count++;
         }
-        foreach(DirectoryInfo childInfo in info.GetDirectories())
+        foreach (DirectoryInfo childInfo in dirInfo.GetDirectories())
         {
-            AllDelete(childInfo);
+            Delete(childInfo);
         }
     }
-    enum AsmType { root,editor}
 }
+/// <summary>
+/// JsonUtilityを使うために作ったクラス
+/// </summary>
+[System.Serializable]
+internal class AsmdefJson
+{
+    public string name;
+    public bool allowUnsafeCode = false, overrideReferences = false, autoReferenced = true;
+    public List<string> references = new List<string>(),
+        optionallUnityReferences = new List<string>(),
+        includePlatforms = new List<string>(),
+        excludePlatforms = new List<string>(),
+        precompiledReferences = new List<string>(),
+        defineConstraints = new List<string>(),
+        versionDefines = new List<string>();
 
+    public override string ToString()
+    {
+        return JsonUtility.ToJson(this);
+    }
+}

@@ -67,7 +67,7 @@ internal class AsmdefCreator
         //最初に選択フォルダ直下のasmdefファイルを作る
         var fileInfo = MakeFile(rootInfo);
         WriteAsmdefStr( new StreamWriter(fileInfo.fs),fileInfo.asmName );
-
+        AssetDatabase.Refresh();//ここで再度読み込まないとGuidが生成されないのかもしれない
         //Editorフォルダからルートフォルダ直下のasmdefファイルを参照するためにGUIDを取得
         string rootAsmdefGuid = 
             AssetDatabase.AssetPathToGUID(
@@ -76,7 +76,7 @@ internal class AsmdefCreator
         
         if (string.IsNullOrEmpty(rootAsmdefGuid))
         {
-            Debug.LogError("asmdefguidを取得できていない");
+            Debug.LogError($"asmdefguidを取得できていない:fileIndo = {fileInfo.fs.Name}");
         }
         
         foreach (DirectoryInfo info in rootInfo.GetDirectories())
